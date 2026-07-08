@@ -86,6 +86,15 @@ Initial SaaS foundation for a behavioral health revenue cycle and EHR-adjacent p
 
 See `docs/supabase-schema-notes.md` for schema and row-level security preparation notes.
 
+## Supabase Schema Alignment and Future Legacy Import
+
+- Supabase schema is the source of truth for database structure.
+- Typed database definitions live in `src/types/database.types.ts` and should be generated from the connected Supabase project when access is available.
+- Supabase access is routed through typed service boundaries in `src/services/supabase` instead of direct ad hoc page/component calls.
+- Cleaned legacy files should be imported later using adapters that map legacy logic/data shapes into typed service contracts.
+- Do not drop legacy business logic that is richer than scaffold placeholders; adapt it through the service boundary and verify compatibility first.
+- After each integration step, run verification checks (`npm run verify`) and follow `docs/post-import-verification-checklist.md`.
+
 ## Suggested next steps
 
 1. Wire Supabase auth and role assignment tables.
