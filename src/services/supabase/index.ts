@@ -16,6 +16,14 @@ interface PatientImportReviewInput {
   draftClinicalNoteId: string
 }
 
+export interface TenantBootstrapInput {
+  tenantName: string
+  tenantType?: 'platform' | 'practice' | 'billing_company' | 'facility'
+  displayName?: string
+  email?: string
+  timezone?: string
+}
+
 export interface ChargeCreateInput extends AuditWriteInput {
   appointmentId: string
   chargeAmountCents?: number
@@ -109,6 +117,21 @@ export const authService = {
     return data
   },
 
+  async signUp(email: string, password: string, displayName?: string) {
+    requireValue(email, 'email')
+    requireValue(password, 'password')
+    const { data, error } = await getSupabaseClient().auth.signUp({
+      email,
+      password,
+      options: displayName ? { data: { display_name: displayName } } : undefined,
+    })
+    throwQueryError('Sign up', error)
+    return {
+      ...data,
+      requiresEmailConfirmation: Boolean(data.user) && !data.session,
+    }
+  },
+
   async signInWithPassword(email: string, password: string) {
     requireValue(email, 'email')
     requireValue(password, 'password')
@@ -120,6 +143,28 @@ export const authService = {
   async signOut() {
     const { error } = await getSupabaseClient().auth.signOut()
     throwQueryError('Sign out', error)
+  },
+}
+
+export const onboardingService = {
+  async bootstrapTenant(input: TenantBootstrapInput) {
+    requireValue(input.tenantName, 'tenantName')
+
+    const { data: userData, error: userError } = await getSupabaseClient().auth.getUser()
+    throwQueryError('Load authenticated user for tenant bootstrap', userError)
+    if (!userData.user) {
+      throw new Error('An authenticated user is required before bootstrapping a tenant.')
+    }
+
+    const { data, error } = await getSupabaseClient().rpc('bootstrap_tenant_for_user', {
+      p_tenant_name: input.tenantName,
+      p_tenant_type: input.tenantType ?? 'practice',
+      p_display_name: input.displayName,
+      p_email: input.email ?? userData.user.email,
+      p_timezone: input.timezone ?? 'America/Denver',
+    })
+    throwQueryError('Bootstrap tenant', error)
+    return data
   },
 }
 
