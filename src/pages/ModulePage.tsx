@@ -17,6 +17,7 @@ import {
   tenantPracticeService,
   type ServiceContext,
 } from '../services/supabase'
+import { credentialingService } from '../services/supabase/credentialing'
 import type { Metric, TableConfig, TableRow, WorkflowModule } from '../types/domain'
 
 interface ModulePageProps {
@@ -124,6 +125,16 @@ const preferredFields: Record<string, string[]> = {
     'related_payer_name',
     'is_overdue',
   ],
+  '/credentialing': [
+    'provider_name',
+    'credentials',
+    'individual_npi',
+    'payer_name',
+    'enrollment_status',
+    'effective_date',
+    'termination_date',
+    'payer_provider_id',
+  ],
 }
 
 const unsupportedReasons: Record<string, string> = {
@@ -131,8 +142,6 @@ const unsupportedReasons: Record<string, string> = {
     'The current database has check-in records, but the frontend does not yet have a safe client-user-to-patient identity binding. Mock patient portal records are intentionally hidden.',
   '/journal':
     'The connected schema does not yet contain an authoritative patient journal/submission table. Mock journal records are intentionally hidden.',
-  '/credentialing':
-    'Provider enrollment data exists in Supabase, but a credentialing-specific frontend service adapter has not been added yet. Mock credentialing records are intentionally hidden.',
 }
 
 function loaderForPath(path: string): LiveLoader | null {
@@ -161,6 +170,8 @@ function loaderForPath(path: string): LiveLoader | null {
       return (context) => mailroomService.listMailroomItems(context)
     case '/tasks':
       return (context) => taskWorkqueueService.listTaskQueue(context)
+    case '/credentialing':
+      return (context) => credentialingService.listProviderEnrollments(context)
     default:
       return null
   }
