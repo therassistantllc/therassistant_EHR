@@ -5,14 +5,14 @@ import type { Database } from '../types/database.types'
 let supabaseClient: SupabaseClient<Database> | null = null
 
 export function getSupabaseClient(): SupabaseClient<Database> {
-  if (!env.supabaseUrl || !env.supabaseAnonKey) {
+  if (!env.supabaseUrl || !env.supabasePublishableKey) {
     throw new Error(
-      'Supabase environment variables are missing. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY before calling Supabase services.',
+      'Supabase environment variables are missing. Set VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY before calling Supabase services.',
     )
   }
 
   if (!supabaseClient) {
-    supabaseClient = createClient<Database>(env.supabaseUrl, env.supabaseAnonKey)
+    supabaseClient = createClient<Database>(env.supabaseUrl, env.supabasePublishableKey)
   }
 
   return supabaseClient
