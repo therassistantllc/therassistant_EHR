@@ -1,6 +1,11 @@
-import { dashboardMetrics, linkedPracticeRows, preSessionRows, roles } from '../data/mockData'
-import { environmentReadiness, securityPrinciples } from '../lib/foundation'
-import type { PracticeSummary, RoleOption } from '../types/domain'
+import { useEffect, useMemo, useState } from 'react'
+import type { TenantAccess } from '../types/appContext'
+import type { Metric, PracticeSummary, RoleOption, TableRow } from '../types/domain'
+import {
+  preSessionReadinessService,
+  reportingService,
+  type ServiceContext,
+} from '../services/supabase'
 import { DataTable } from '../components/DataTable'
 import { MetricCard } from '../components/MetricCard'
 import { Panel } from '../components/Panel'
@@ -8,47 +13,188 @@ import { Panel } from '../components/Panel'
 interface DashboardPageProps {
   activeRole: RoleOption
   activePractice: PracticeSummary
+  serviceContext: ServiceContext
+  accessibleTenants: TenantAccess[]
+}
+
+interface ReportingSnapshot {
+  kpis: Record<string, unknown> | null
+  openAr: Record<string, unknown> | null
 }
 
 const roleQuickActions: Record<RoleOption['value'], string[]> = {
   platform_admin: [
     'Review tenant health and practice onboarding blockers.',
-    'Confirm row-level security rollout for new Supabase tables.',
-    'Audit cross-practice billing-company access grants.',
+    'Monitor shared workqueues and access boundaries.',
+    'Review cross-practice billing activity that requires escalation.',
   ],
   billing_company_admin: [
     'Balance linked-practice denial follow-up and payment posting workloads.',
-    'Review timely filing risks across all serviced practices.',
+    'Review timely filing risks across serviced practices.',
     'Escalate credentialing-related denials before month-end close.',
   ],
   practice_admin: [
     'Resolve eligibility, documentation, and patient balance issues before sessions.',
     'Monitor clinician note readiness and charge release timing.',
-    'Review practice-level collections, denials, and patient portal adoption.',
+    'Review practice-level A/R, denials, and open workqueues.',
   ],
   clinician: [
-    'Check the pre-session board for authorization, balance, and documentation blockers.',
-    'Review patient-submitted journals and selectively import only what is clinically relevant.',
+    'Check the pre-session board for visit-readiness blockers.',
     'Finish provider-authored notes before releasing charges to billing.',
+    'Review unsigned documentation that needs clinical action.',
   ],
   biller: [
-    'Clear claim edits, denials, and zero-pay postings first.',
-    'Post historical onboarding payments directly to the patient ledger when needed.',
+    'Clear claim edits, denials, and payment posting issues first.',
+    'Post historical onboarding payments separately from claim-based payments.',
     'Track corrected claims, reconsiderations, and appeal deadlines.',
   ],
   front_desk: [
-    'Work pre-session eligibility, portal, and intake issues before check-in.',
-    'Confirm responsible party, copay, and insurance updates with patients.',
-    'Escalate missing authorizations or balance plans to the right queue.',
+    'Work pre-session eligibility and intake issues before check-in.',
+    'Confirm insurance and responsible-party changes that require staff review.',
+    'Escalate missing authorizations to the appropriate workqueue.',
   ],
   patient: [
-    'Complete check-in and questionnaires before your next session.',
-    'Review balances, update insurance, and share session topics in the portal.',
-    'Journal between sessions without changing the provider’s final note.',
+    'Complete check-in items before the next session.',
+    'Review account information made available through the patient workflow.',
+    'Submit updates without altering provider-authored clinical documentation.',
   ],
 }
 
-export function DashboardPage({ activeRole, activePractice }: DashboardPageProps) {
+function numberValue(value: unknown) {
+  const parsed = Number(value ?? 0)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function currencyFromCents(value: unknown) {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    maximumFractionDigits: 0,
+  }).format(numberValue(value) / 100)
+}
+
+function formatDateTime(value: unknown) {
+  if (typeof value !== 'string' || !value) return '—'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
+}
+
+export function DashboardPage({
+  activeRole,
+  activePractice,
+  serviceContext,
+  accessibleTenants,
+}: DashboardPageProps) {
+  const [reporting, setReporting] = useState<ReportingSnapshot | null>(null)
+  const [appointments, setAppointments] = useState<Record<string, unknown>[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadDashboard() {
+      setLoading(true)
+      setError('')
+
+      try {
+        const [reportingResult, appointmentResult] = await Promise.all([
+          reportingService.listReportingSnapshots(serviceContext),
+          preSessionReadinessService.listPreSessionReadiness(serviceContext),
+        ])
+
+        if (cancelled) return
+        setReporting(reportingResult as ReportingSnapshot)
+        setAppointments((appointmentResult ?? []) as Record<string, unknown>[])
+      } catch (loadError) {
+        if (!cancelled) {
+          setError(loadError instanceof Error ? loadError.message : 'Unable to load dashboard data.')
+        }
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    void loadDashboard()
+    return () => {
+      cancelled = true
+    }
+  }, [serviceContext])
+
+  const metrics = useMemo<Metric[]>(() => {
+    const kpis = reporting?.kpis ?? {}
+    const openAr = reporting?.openAr ?? {}
+
+    return [
+      {
+        label: 'Clients',
+        value: numberValue(kpis.client_count).toLocaleString(),
+        trend: 'Active tenant client population',
+      },
+      {
+        label: 'Active providers',
+        value: numberValue(kpis.active_provider_count).toLocaleString(),
+        trend: 'Providers currently active in this workspace',
+      },
+      {
+        label: 'Claims ready',
+        value: numberValue(kpis.ready_for_batch_claim_count).toLocaleString(),
+        trend: 'Claims ready for batching',
+        tone: 'positive',
+      },
+      {
+        label: 'Open denials',
+        value: numberValue(kpis.open_denial_count).toLocaleString(),
+        trend: 'Denials still requiring resolution',
+        tone: numberValue(kpis.open_denial_count) > 0 ? 'warning' : 'positive',
+      },
+      {
+        label: 'Open workqueues',
+        value: numberValue(kpis.open_workqueue_count).toLocaleString(),
+        trend: 'Operational tasks still open',
+        tone: numberValue(kpis.open_workqueue_count) > 0 ? 'warning' : 'positive',
+      },
+      {
+        label: 'Unreconciled payments',
+        value: numberValue(kpis.unreconciled_payment_count).toLocaleString(),
+        trend: 'Payments requiring reconciliation',
+        tone: numberValue(kpis.unreconciled_payment_count) > 0 ? 'warning' : 'positive',
+      },
+      {
+        label: 'Open A/R',
+        value: currencyFromCents(openAr.total_open_ar_cents ?? kpis.total_open_ar_cents),
+        trend: `${numberValue(openAr.open_claim_count).toLocaleString()} open claims`,
+      },
+    ]
+  }, [reporting])
+
+  const preSessionRows = useMemo<TableRow[]>(
+    () =>
+      appointments.map((appointment) => ({
+        Patient: String(appointment.client_name ?? '—'),
+        Appointment: formatDateTime(appointment.starts_at),
+        Provider: String(appointment.provider_name ?? '—'),
+        Service: String(appointment.service_type ?? appointment.cpt_code ?? '—'),
+        Status: String(appointment.appointment_status ?? '—'),
+        CheckIn: appointment.checked_in_at ? 'Checked in' : appointment.arrived_at ? 'Arrived' : 'Pending',
+        Documentation: appointment.has_note ? 'Note present' : 'No note yet',
+        Charge: appointment.has_charge ? 'Created' : 'Pending',
+      })),
+    [appointments],
+  )
+
+  const tenantRows = useMemo<TableRow[]>(
+    () =>
+      accessibleTenants.map((tenant) => ({
+        Workspace: tenant.tenant_name,
+        Type: tenant.tenant_type.replaceAll('_', ' '),
+        Status: tenant.tenant_status.replaceAll('_', ' '),
+        Roles: tenant.roles.join(', ').replaceAll('_', ' '),
+        Timezone: tenant.timezone,
+      })),
+    [accessibleTenants],
+  )
+
   return (
     <div className="page-stack">
       <section className="hero-card">
@@ -56,9 +202,8 @@ export function DashboardPage({ activeRole, activePractice }: DashboardPageProps
           <p className="eyebrow">Behavioral health revenue cycle + clinical readiness</p>
           <h1>THERASSISTANT</h1>
           <p className="hero-card__body">
-            A dashboard-first foundation for behavioral health practices, billing companies, and patients.
-            The current workspace is <strong>{activePractice.name}</strong> for the{' '}
-            <strong>{activeRole.label}</strong> role.
+            Live Supabase workspace for <strong>{activePractice.name}</strong>. The current authorized UI role is{' '}
+            <strong>{activeRole.label}</strong>.
           </p>
         </div>
         <div className="hero-card__highlight">
@@ -67,8 +212,10 @@ export function DashboardPage({ activeRole, activePractice }: DashboardPageProps
         </div>
       </section>
 
-      <section className="metric-grid">
-        {dashboardMetrics.map((metric) => (
+      {error ? <p className="form-message form-message--error">{error}</p> : null}
+
+      <section className="metric-grid" aria-busy={loading}>
+        {metrics.map((metric) => (
           <MetricCard key={metric.label} metric={metric} />
         ))}
       </section>
@@ -82,60 +229,38 @@ export function DashboardPage({ activeRole, activePractice }: DashboardPageProps
           </ul>
         </Panel>
 
-        <Panel
-          title="Foundation status"
-          description="Supabase-ready environment and security expectations for the first build."
-        >
+        <Panel title="Live connection" description="Current data source and scope for this browser session.">
           <ul className="checklist">
-            {environmentReadiness.map((item) => (
-              <li key={item}>{item}</li>
-            ))}
+            <li>Supabase Auth protects the application shell.</li>
+            <li>Tenant membership and database RLS determine record access.</li>
+            <li>Dashboard KPIs and queues are loaded from live Supabase views.</li>
           </ul>
         </Panel>
       </div>
 
       <Panel
         title="Pre-session readiness"
-        description="A clinician-friendly view of patient, insurance, authorization, balance, documentation, and billing indicators."
+        description={loading ? 'Loading live appointments…' : 'Current appointment readiness from Supabase.'}
       >
-        <DataTable
-          table={{
-            columns: ['Patient', 'Appointment', 'Coverage', 'Authorization', 'Balance', 'Documentation', 'Billing'],
-            rows: preSessionRows,
-          }}
-        />
-      </Panel>
-
-      <div className="content-grid">
-        <Panel title="Linked practice overview" description="Billing-company and platform users can review shared operating queues.">
+        {preSessionRows.length ? (
           <DataTable
             table={{
-              columns: ['Practice', 'Clinicians', 'Claims', 'Denials', 'Eligibility', 'Portal'],
-              rows: linkedPracticeRows,
+              columns: ['Patient', 'Appointment', 'Provider', 'Service', 'Status', 'CheckIn', 'Documentation', 'Charge'],
+              rows: preSessionRows,
             }}
           />
-        </Panel>
+        ) : (
+          <p className="empty-state">No upcoming appointment records are available for this workspace.</p>
+        )}
+      </Panel>
 
-        <Panel title="Audit + HIPAA-conscious guardrails" description="Foundational rules baked into the first version.">
-          <ul className="checklist">
-            {securityPrinciples.map((item) => (
-              <li key={item}>{item}</li>
-            ))}
-          </ul>
-        </Panel>
-      </div>
-
-      <Panel
-        title="Core workflow map"
-        description="The first version covers clinical, billing, patient, and admin modules with mock data where production integrations are pending."
-      >
-        <div className="pill-list">
-          {roles.map((role) => (
-            <span key={role.value} className="role-pill">
-              {role.label}
-            </span>
-          ))}
-        </div>
+      <Panel title="Workspace access" description="Tenants currently assigned to the authenticated user.">
+        <DataTable
+          table={{
+            columns: ['Workspace', 'Type', 'Status', 'Roles', 'Timezone'],
+            rows: tenantRows,
+          }}
+        />
       </Panel>
     </div>
   )
